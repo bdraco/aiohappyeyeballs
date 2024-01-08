@@ -80,12 +80,23 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref || github.ref_name }}
 
-      # Do a dry run of PSR
+      # Dry run of PSR to build the distribution
       - name: Test release
         uses: python-semantic-release/python-semantic-release@v8.5.0
         if: github.ref_name != 'main'
         with:
           root_options: --noop
+
+      - uses: snok/install-poetry@v1.3.4
+      - name: Install Dependencies
+        run: poetry install --only main,test_build
+        shell: bash
+
+      - name: Test build of distribution packages
+        shell: bash
+        run: |
+          poetry build
+          poetry run python -Im twine check --strict dist/*
 
   check_if_should_release:
     # This is a dummy step to avoid starting the release step which will
@@ -103,9 +114,37 @@ jobs:
         run: |
           echo "GitHub requires the step do something, so we're just going to echo something here."
 
-  release:
+  build_release:
     needs:
       - check_if_should_release
+
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      # On main branch: Call PSR to build the distribution
+      - name: Release
+        uses: python-semantic-release/python-semantic-release@v8.5.0
+        id: release
+
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v3
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  release:
+    needs:
+      - build_release
 
     runs-on: ubuntu-latest
     environment: pypi
@@ -115,24 +154,18 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Download all the dists
+        uses: actions/download-artifact@v3
         with:
-          fetch-depth: 0
-          ref: ${{ github.head_ref || github.ref_name }}
-
-      # On main branch: actual PSR + upload to PyPI & GitHub
-      - name: Release
-        uses: python-semantic-release/python-semantic-release@v8.5.0
-        id: release
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          name: python-package-distributions
+          path: dist/
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        if: steps.release.outputs.released == 'true'
+        if: needs.build_release.outputs.released == 'true'
 
       - name: Publish package distributions to GitHub Releases
-        uses: python-semantic-release/upload-to-gh-release@main
-        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/upload-to-gh-release@1eeda76de33f20e9341a93b0e697c79773c6914c
+        if: needs.build_release.outputs.released == 'true'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
